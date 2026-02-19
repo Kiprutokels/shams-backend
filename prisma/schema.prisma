@@ -1,0 +1,273 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  DOCTOR
+  PATIENT
+  NURSE
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum AppointmentType {
+  CONSULTATION
+  FOLLOW_UP
+  LABORATORY
+  EMERGENCY
+  VACCINATION
+  CHECKUP
+}
+
+enum PriorityLevel {
+  EMERGENCY
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum NotificationType {
+  SMS
+  EMAIL
+  PUSH
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  READ
+}
+
+enum QueueStatus {
+  WAITING
+  CALLED
+  IN_SERVICE
+  COMPLETED
+  SKIPPED
+  LEFT
+}
+
+model User {
+  id               Int      @id @default(autoincrement())
+  email            String   @unique
+  phone            String   @unique
+  hashedPassword   String   @map("hashed_password")
+  
+  // Personal Information
+  firstName        String   @map("first_name")
+  lastName         String   @map("last_name")
+  dateOfBirth      DateTime? @map("date_of_birth")
+  gender           String?
+  address          String?
+  
+  // Role and Status
+  role             UserRole @default(PATIENT)
+  isActive         Boolean  @default(true) @map("is_active")
+  isVerified       Boolean  @default(false) @map("is_verified")
+  
+  // Email Verification
+  verificationCode String?  @map("verification_code")
+  verificationCodeExpiry DateTime? @map("verification_code_expiry")
+  
+  // Password Reset
+  resetPasswordToken String?  @map("reset_password_token")
+  resetPasswordExpiry DateTime? @map("reset_password_expiry")
+  
+  // Medical Information (for patients)
+  bloodType        String?  @map("blood_type")
+  allergies        String?
+  medicalHistory   String?  @map("medical_history")
+  
+  // Professional Information (for doctors/nurses)
+  specialization   String?
+  licenseNumber    String?  @map("license_number")
+  department       String?
+  
+  // Timestamps
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  lastLogin        DateTime? @map("last_login")
+  
+  // Relationships
+  patientAppointments    Appointment[] @relation("PatientAppointments")
+  doctorAppointments     Appointment[] @relation("DoctorAppointments")
+  notifications          Notification[]
+  
+  @@map("users")
+}
+
+model Appointment {
+  id                    Int               @id @default(autoincrement())
+  
+  // Foreign Keys
+  patientId             Int               @map("patient_id")
+  doctorId              Int               @map("doctor_id")
+  
+  // Appointment Details
+  appointmentDate       DateTime          @map("appointment_date")
+  appointmentType       AppointmentType   @map("appointment_type")
+  status                AppointmentStatus @default(SCHEDULED)
+  priority              PriorityLevel     @default(MEDIUM)
+  
+  // Duration and Timing
+  durationMinutes       Int               @default(30) @map("duration_minutes")
+  estimatedWaitTime     Int?              @map("estimated_wait_time")
+  actualStartTime       DateTime?         @map("actual_start_time")
+  actualEndTime         DateTime?         @map("actual_end_time")
+  
+  // AI Predictions
+  noShowProbability     Float?            @map("no_show_probability")
+  predictedDuration     Int?              @map("predicted_duration")
+  aiPriorityScore       Float?            @map("ai_priority_score")
+  
+  // Clinical Information
+  chiefComplaint        String?           @map("chief_complaint")
+  symptoms              String?
+  vitalSigns            String?           @map("vital_signs")
+  diagnosis             String?
+  prescription          String?
+  notes                 String?
+  
+  // Notifications
+  reminderSent          Boolean           @default(false) @map("reminder_sent")
+  reminderSentAt        DateTime?         @map("reminder_sent_at")
+  confirmationRequired  Boolean           @default(true) @map("confirmation_required")
+  confirmedAt           DateTime?         @map("confirmed_at")
+  
+  // Queue Management
+  queuePosition         Int?              @map("queue_position")
+  checkedIn             Boolean           @default(false) @map("checked_in")
+  checkInTime           DateTime?         @map("check_in_time")
+  
+  // Timestamps
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+  
+  // Relationships
+  patient               User              @relation("PatientAppointments", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor                User              @relation("DoctorAppointments", fields: [doctorId], references: [id], onDelete: Cascade)
+  notifications         Notification[]
+  
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([appointmentDate])
+  @@map("appointments")
+}
+
+model Notification {
+  id                    Int                  @id @default(autoincrement())
+  
+  // Foreign Keys
+  userId                Int                  @map("user_id")
+  appointmentId         Int?                 @map("appointment_id")
+  
+  // Notification Details
+  notificationType      NotificationType     @map("notification_type")
+  status                NotificationStatus   @default(PENDING)
+  
+  // Content
+  title                 String
+  message               String
+  templateName          String?              @map("template_name")
+  
+  // Contact Information
+  recipientEmail        String?              @map("recipient_email")
+  recipientPhone        String?              @map("recipient_phone")
+  
+  // Delivery Information
+  scheduledAt           DateTime?            @map("scheduled_at")
+  sentAt                DateTime?            @map("sent_at")
+  deliveredAt           DateTime?            @map("delivered_at")
+  readAt                DateTime?            @map("read_at")
+  failedAt              DateTime?            @map("failed_at")
+  
+  // Error Tracking
+  errorMessage          String?              @map("error_message")
+  retryCount            Int                  @default(0) @map("retry_count")
+  
+  // Metadata
+  isRead                Boolean              @default(false) @map("is_read")
+  priority              String               @default("normal")
+  
+  // Timestamps
+  createdAt             DateTime             @default(now()) @map("created_at")
+  updatedAt             DateTime             @updatedAt @map("updated_at")
+  
+  // Relationships
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointment           Appointment?         @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([appointmentId])
+  @@map("notifications")
+}
+
+model Queue {
+  id                    Int                  @id @default(autoincrement())
+  
+  // Queue Information
+  queueDate             DateTime             @map("queue_date")
+  department            String
+  queueNumber           Int                  @map("queue_number")
+  
+  // Patient and Appointment
+  patientId             Int                  @map("patient_id")
+  appointmentId         Int?                 @map("appointment_id")
+  patientName           String               @map("patient_name")
+  
+  // Queue Status
+  status                QueueStatus          @default(WAITING)
+  priorityLevel         String               @default("medium") @map("priority_level")
+  priorityScore         Float                @default(1.0) @map("priority_score")
+  
+  // Timing Information
+  checkInTime           DateTime             @map("check_in_time")
+  calledTime            DateTime?            @map("called_time")
+  serviceStartTime      DateTime?            @map("service_start_time")
+  serviceEndTime        DateTime?            @map("service_end_time")
+  estimatedWaitTime     Int?                 @map("estimated_wait_time")
+  actualWaitTime        Int?                 @map("actual_wait_time")
+  
+  // Service Information
+  serviceType           String               @map("service_type")
+  doctorName            String?              @map("doctor_name")
+  roomNumber            String?              @map("room_number")
+  
+  // Flags
+  isEmergency           Boolean              @default(false) @map("is_emergency")
+  notified              Boolean              @default(false)
+  
+  // Timestamps
+  createdAt             DateTime             @default(now()) @map("created_at")
+  updatedAt             DateTime             @updatedAt @map("updated_at")
+  
+  @@index([patientId])
+  @@index([appointmentId])
+  @@index([queueDate])
+  @@index([department])
+  @@map("queues")
+}
