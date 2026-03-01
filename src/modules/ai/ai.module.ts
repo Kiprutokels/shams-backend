@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '@nestjs/config';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { NoShowPredictorService } from './services/noshow-predictor.service';
@@ -7,9 +9,21 @@ import { PriorityClassifierService } from './services/priority-classifier.servic
 import { AppointmentsModule } from '../appointments/appointments.module';
 
 @Module({
-  imports: [AppointmentsModule],
+  imports: [
+    ConfigModule,
+    HttpModule.register({
+      timeout: 30000,
+      maxRedirects: 5,
+    }),
+    AppointmentsModule,
+  ],
   controllers: [AiController],
-  providers: [AiService, NoShowPredictorService, WaitTimeEstimatorService, PriorityClassifierService],
+  providers: [
+    AiService,
+    NoShowPredictorService,
+    WaitTimeEstimatorService,
+    PriorityClassifierService,
+  ],
   exports: [AiService],
 })
 export class AiModule {}
