@@ -1,15 +1,97 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MailService } from '../mail/mail.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateUserDto } from './dto/create-user.dto';
 import { UserRole } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private mailService: MailService,
+  ) {}
 
+  // ─────────────────────────────────────────────────────────────────
+  // Admin creates any user role
+  // ─────────────────────────────────────────────────────────────────
+  async adminCreateUser(createUserDto: CreateUserDto, creatorRole: string) {
+    // Only ADMIN can create any role; DOCTOR can only create PATIENT
+    if (creatorRole === 'DOCTOR' && createUserDto.role !== 'PATIENT') {
+      throw new ForbiddenException('Doctors can only create PATIENT accounts');
+    }
+
+    const existing = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: createUserDto.email }, { phone: createUserDto.phone }],
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        'User with this email or phone already exists',
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+
+    // Generate verification code
+    const verificationCode = Math.floor(
+      100000 + Math.random() * 900000,
+    ).toString();
+    const verificationCodeExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
+    const user = await this.prisma.user.create({
+      data: {
+        email: createUserDto.email,
+        phone: createUserDto.phone,
+        hashedPassword,
+        firstName: createUserDto.firstName,
+        lastName: createUserDto.lastName,
+        role: createUserDto.role,
+        specialization: createUserDto.specialization,
+        licenseNumber: createUserDto.licenseNumber,
+        department: createUserDto.department,
+        verificationCode,
+        verificationCodeExpiry,
+        isActive: true,
+        isVerified: false,
+      },
+    });
+
+    // Send invite email
+    // if (createUserDto.sendInviteEmail !== false) {
+    //   try {
+    //     await this.mailService.sendInviteEmail(
+    //       user.email,
+    //       user.firstName,
+    //       createUserDto.password,   // plain-text; user changes after login
+    //       verificationCode,
+    //       user.role,
+    //     );
+    //   } catch (error) {
+    //     console.error('Failed to send invite email:', error);
+    //   }
+    // }
+
+    return {
+      message: `${user.role} account created successfully`,
+      userId: user.id,
+      email: user.email,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // List all users (admin)
+  // ─────────────────────────────────────────────────────────────────
   async findAll(role?: UserRole) {
     const where = role ? { role } : {};
-
     return this.prisma.user.findMany({
       where,
       select: {
@@ -23,11 +105,17 @@ export class UsersService {
         isVerified: true,
         specialization: true,
         department: true,
+        licenseNumber: true,
         createdAt: true,
+        lastLogin: true,
       },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Single user
+  // ─────────────────────────────────────────────────────────────────
   async findOne(id: number) {
     const user = await this.prisma.user.findUnique({
       where: { id },
@@ -53,20 +141,18 @@ export class UsersService {
         lastLogin: true,
       },
     });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
+    if (!user) throw new NotFoundException('User not found');
     return user;
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Doctors list
+  // ─────────────────────────────────────────────────────────────────
   async findDoctors(specialization?: string) {
     const where: any = { role: UserRole.DOCTOR, isActive: true };
     if (specialization) {
       where.specialization = { contains: specialization, mode: 'insensitive' };
     }
-
     return this.prisma.user.findMany({
       where,
       select: {
@@ -80,30 +166,27 @@ export class UsersService {
     });
   }
 
-  async update(id: number, updateUserDto: UpdateUserDto, currentUserId: number, currentUserRole: string) {
+  // ─────────────────────────────────────────────────────────────────
+  // Update user
+  // ─────────────────────────────────────────────────────────────────
+  async update(
+    id: number,
+    updateUserDto: UpdateUserDto,
+    currentUserId: number,
+    currentUserRole: string,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    // Patients can only update their own profile
-    if (currentUserRole === 'PATIENT' && id !== currentUserId) {
+    if (currentUserRole === 'PATIENT' && id !== currentUserId)
       throw new ForbiddenException('You can only update your own profile');
-    }
-
-    // Doctors can only update their own profile
-    if (currentUserRole === 'DOCTOR' && id !== currentUserId) {
+    if (currentUserRole === 'DOCTOR' && id !== currentUserId)
       throw new ForbiddenException('You can only update your own profile');
-    }
 
-    // Only admin can update isActive
-    if (updateUserDto.isActive !== undefined && currentUserRole !== 'ADMIN') {
+    if (updateUserDto.isActive !== undefined && currentUserRole !== 'ADMIN')
       delete updateUserDto.isActive;
-    }
 
     const updateData: any = { ...updateUserDto };
-
     if (updateUserDto.dateOfBirth) {
       updateData.dateOfBirth = new Date(updateUserDto.dateOfBirth);
     }
@@ -124,34 +207,37 @@ export class UsersService {
         isActive: true,
         bloodType: true,
         allergies: true,
+        medicalHistory: true,
         specialization: true,
         department: true,
       },
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Soft delete
+  // ─────────────────────────────────────────────────────────────────
   async remove(id: number, currentUserRole: string) {
-    if (currentUserRole !== 'ADMIN') {
+    if (currentUserRole !== 'ADMIN')
       throw new ForbiddenException('Only admins can delete users');
-    }
-
     const user = await this.prisma.user.findUnique({ where: { id } });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    // Soft delete by deactivating
+    if (!user) throw new NotFoundException('User not found');
     return this.prisma.user.update({
       where: { id },
       data: { isActive: false },
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Own profile
+  // ─────────────────────────────────────────────────────────────────
   async getProfile(userId: number) {
     return this.findOne(userId);
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Stats
+  // ─────────────────────────────────────────────────────────────────
   async getStats(userId: number, role: string) {
     if (role === 'PATIENT') {
       const [total, upcoming, completed, cancelled] = await Promise.all([
@@ -170,11 +256,10 @@ export class UsersService {
           where: { patientId: userId, status: 'CANCELLED' },
         }),
       ]);
-
       return { total, upcoming, completed, cancelled };
     }
 
-    if (role === 'DOCTOR') {
+    if (role === 'DOCTOR' || role === 'NURSE') {
       const [total, today, completed, pending] = await Promise.all([
         this.prisma.appointment.count({ where: { doctorId: userId } }),
         this.prisma.appointment.count({
@@ -196,7 +281,6 @@ export class UsersService {
           },
         }),
       ]);
-
       return { total, today, completed, pending };
     }
 

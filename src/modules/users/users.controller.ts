@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Body,
   Patch,
   Param,
@@ -11,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateUserDto } from './dto/create-user.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -21,6 +23,20 @@ import { UserRole } from '@prisma/client';
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+
+  /**
+   * POST /users
+   * Admin creates any role; Doctor can create PATIENT only.
+   * Sends invite email with temporary password.
+   */
+  @Post()
+  @Roles('ADMIN', 'DOCTOR')
+  adminCreateUser(
+    @Body() createUserDto: CreateUserDto,
+    @CurrentUser() currentUser: any,
+  ) {
+    return this.usersService.adminCreateUser(createUserDto, currentUser.role);
+  }
 
   @Get()
   @Roles('ADMIN')
@@ -59,7 +75,10 @@ export class UsersController {
 
   @Delete(':id')
   @Roles('ADMIN')
-  remove(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
     return this.usersService.remove(id, user.role);
   }
 }
