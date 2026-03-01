@@ -1,9 +1,19 @@
-import { IsInt, IsDateString, IsEnum, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsInt,
+  IsDateString,
+  IsEnum,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 import { AppointmentType, PriorityLevel } from '@prisma/client';
+import { Type } from 'class-transformer';
 
 export class CreateAppointmentDto {
   @IsInt()
-  doctorId: number;
+  @IsOptional()
+  @Type(() => Number)
+  doctorId?: number;
 
   @IsDateString()
   appointmentDate: string;
@@ -18,6 +28,7 @@ export class CreateAppointmentDto {
   @IsInt()
   @Min(15)
   @IsOptional()
+  @Type(() => Number)
   durationMinutes?: number;
 
   @IsString()
