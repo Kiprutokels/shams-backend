@@ -1,6 +1,4 @@
-
-// create-user.dto.ts
-import { IsEmail, IsString, MinLength, IsEnum, IsOptional, Matches, IsDateString } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsEnum, IsOptional, Matches, IsBoolean } from 'class-validator';
 import { UserRole } from '@prisma/client';
 
 export class CreateUserDto {
@@ -8,7 +6,7 @@ export class CreateUserDto {
   email: string;
 
   @IsString()
-  @Matches(/^\+?[1-9]\d{1,14}$/)
+  @Matches(/^\+?[1-9]\d{1,14}$/, { message: 'Phone must be valid (e.g. +254712345678)' })
   phone: string;
 
   @IsString()
@@ -24,26 +22,6 @@ export class CreateUserDto {
   @IsEnum(UserRole)
   role: UserRole;
 
-  @IsDateString()
-  @IsOptional()
-  dateOfBirth?: string;
-
-  @IsString()
-  @IsOptional()
-  gender?: string;
-
-  @IsString()
-  @IsOptional()
-  address?: string;
-
-  @IsString()
-  @IsOptional()
-  bloodType?: string;
-
-  @IsString()
-  @IsOptional()
-  allergies?: string;
-
   @IsString()
   @IsOptional()
   specialization?: string;
@@ -55,4 +33,9 @@ export class CreateUserDto {
   @IsString()
   @IsOptional()
   department?: string;
+
+  /** When true, backend sends invite/verification email */
+  @IsBoolean()
+  @IsOptional()
+  sendInviteEmail?: boolean;
 }
