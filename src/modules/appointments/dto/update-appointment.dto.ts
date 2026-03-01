@@ -1,5 +1,6 @@
-import { IsEnum, IsOptional, IsString, IsDateString, IsInt, IsBoolean } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsDateString, IsInt, IsBoolean, Min } from 'class-validator';
 import { AppointmentStatus, PriorityLevel } from '@prisma/client';
+import { Type } from 'class-transformer';
 
 export class UpdateAppointmentDto {
   @IsDateString()
@@ -15,8 +16,16 @@ export class UpdateAppointmentDto {
   priority?: PriorityLevel;
 
   @IsInt()
+  @Min(15)
   @IsOptional()
+  @Type(() => Number)
   durationMinutes?: number;
+
+  // Admin/Nurse can assign doctor via PATCH
+  @IsInt()
+  @IsOptional()
+  @Type(() => Number)
+  doctorId?: number;
 
   @IsString()
   @IsOptional()
