@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, catchError, of } from 'rxjs';
@@ -15,9 +15,10 @@ import {
 } from './dto';
 
 @Injectable()
-export class AiService {
+export class AiService implements OnModuleInit {
   private readonly logger = new Logger(AiService.name);
   private readonly mlBaseUrl: string;
+  private readonly mlApiKey: string;
 
   constructor(
     private prisma: PrismaService,
@@ -31,90 +32,126 @@ export class AiService {
       'AI_SERVICE_URL',
       'http://localhost:8000',
     );
+
+    // ✅ Read once, fail loudly if missing
+    this.mlApiKey = this.configService.get<string>('ML_SERVICE_API_KEY') ?? '';
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Helper: call Python FastAPI
-  // ─────────────────────────────────────────────────────────────────
+  // ── Lifecycle hook: validate config at startup ────────────────────────────
+  onModuleInit() {
+    if (!this.mlApiKey) {
+      this.logger.error(
+        '❌  ML_SERVICE_API_KEY is not set in environment variables!\n' +
+          '    All calls to the Python ML service will receive 401 Unauthorized.\n' +
+          '    Add ML_SERVICE_API_KEY=<value> to your .env and restart.',
+      );
+    } else {
+      this.logger.log(`✅  ML Service configured → ${this.mlBaseUrl}`);
+    }
+  }
+
+  // ── Private: call Python FastAPI ─────────────────────────────────────────
   private async callPythonML<T>(
     endpoint: string,
-    payload: any,
+    payload: unknown,
   ): Promise<T | null> {
+    // Guard: never send an empty/undefined key — it will always 401
+    if (!this.mlApiKey) {
+      this.logger.warn(
+        `Skipping ML call (${endpoint}): ML_SERVICE_API_KEY not configured.`,
+      );
+      return null;
+    }
+
     const url = `${this.mlBaseUrl}/api/v1${endpoint}`;
-    const apiKey = this.configService.get<string>('ML_SERVICE_API_KEY');
 
     try {
       const response = await firstValueFrom(
         this.httpService
           .post<T>(url, payload, {
-            headers: { 'X-Internal-API-Key': apiKey },
+            headers: {
+              'X-Internal-API-Key': this.mlApiKey,
+              'Content-Type': 'application/json',
+            },
+            timeout: 10_000, // 10 s — don't hang forever
           })
           .pipe(
             catchError((err) => {
-              const status = err?.response?.status;
+              const httpStatus: number | undefined = err?.response?.status;
 
-              if (status === 401 || status === 403) {
-                // Auth failure — throw loudly, do NOT fall back to local stubs
+              // ── Auth failure ─────────────────────────────────────────────
+              if (httpStatus === 401 || httpStatus === 403) {
+                const body = JSON.stringify(err?.response?.data ?? {});
                 throw new Error(
-                  `ML service auth rejected (${status}). Check ML_SERVICE_API_KEY.`,
+                  `ML service auth rejected (${httpStatus}) at ${endpoint}. ` +
+                    `Response: ${body}. ` +
+                    `Check that ML_SERVICE_API_KEY matches INTERNAL_API_KEY in Python.`,
                 );
               }
 
-              // Service down / timeout / 5xx → safe to use local fallback
+              // ── Service down / 5xx / timeout → safe to fall back ─────────
               this.logger.warn(
-                `ML service unavailable (${endpoint}): ${err.message}`,
+                `ML service unavailable (${endpoint}): ` +
+                  `[${httpStatus ?? 'network error'}] ${err.message}`,
               );
               return of(null as any);
             }),
           ),
       );
+
       return response?.data ?? null;
     } catch (err) {
-      if ((err as Error).message?.includes('auth rejected')) {
-        // Bubble this up so you see it clearly in logs/responses
+      const message = (err as Error).message ?? String(err);
+
+      if (message.includes('auth rejected')) {
+        // Re-throw auth failures so the controller can surface them clearly
+        this.logger.error(message);
         throw err;
       }
-      this.logger.warn(`ML service call failed (${endpoint}): ${err}`);
+
+      this.logger.warn(`ML call failed (${endpoint}): ${message}`);
       return null;
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // No-show prediction
-  // ─────────────────────────────────────────────────────────────────
+  // ── No-show prediction ────────────────────────────────────────────────────
   async predictNoShow(request: NoShowPredictionRequest, _userId?: number) {
-    // Enrich from DB if appointment_id provided
+    // Enrich from DB when appointment_id is provided
     if (request.appointment_id) {
-      const appointment = await this.prisma.appointment.findUnique({
+      const appt = await this.prisma.appointment.findUnique({
         where: { id: request.appointment_id },
         include: { patient: true },
       });
-      if (appointment) {
-        request.patient_id = appointment.patientId;
-        request.appointment_date = appointment.appointmentDate.toISOString();
-        request.appointment_type = appointment.appointmentType as string;
+
+      if (appt) {
+        request.patient_id = appt.patientId;
+        request.appointment_date = appt.appointmentDate.toISOString();
+        request.appointment_type = appt.appointmentType as string;
+
         const [prevTotal, prevNoShow] = await Promise.all([
           this.prisma.appointment.count({
-            where: { patientId: appointment.patientId },
+            where: { patientId: appt.patientId },
           }),
           this.prisma.appointment.count({
-            where: { patientId: appointment.patientId, status: 'NO_SHOW' },
+            where: { patientId: appt.patientId, status: 'NO_SHOW' },
           }),
         ]);
+
         request.previous_appointments = prevTotal;
         request.previous_no_shows = prevNoShow;
       }
     }
 
-    // 1. Try Python ML service
+    // 1️⃣  Try Python ML service first
     const mlResult = await this.callPythonML<any>(
       '/ai/predict-noshow',
       request,
     );
+    // 2️⃣  Fall back to local TypeScript predictor
     const prediction =
       mlResult ?? (await this.noShowPredictor.predict(request));
 
-    // 2. Persist to DB
+    // Persist result
     if (
       request.appointment_id &&
       prediction?.no_show_probability !== undefined
@@ -124,15 +161,17 @@ export class AiService {
           where: { id: request.appointment_id },
           data: { noShowProbability: prediction.no_show_probability },
         })
-        .catch(() => {});
+        .catch((e) =>
+          this.logger.warn(
+            `Failed to persist no-show probability: ${e.message}`,
+          ),
+        );
     }
 
     return prediction;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Wait time estimation
-  // ─────────────────────────────────────────────────────────────────
+  // ── Wait-time estimation ──────────────────────────────────────────────────
   async estimateWaitTime(request: WaitTimePredictionRequest) {
     if (!request.current_queue_length) {
       const appointmentDate = new Date(request.appointment_date);
@@ -178,15 +217,15 @@ export class AiService {
             queuePosition: estimation.queue_position,
           },
         })
-        .catch(() => {});
+        .catch((e) =>
+          this.logger.warn(`Failed to persist wait time: ${e.message}`),
+        );
     }
 
     return estimation;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Priority classification
-  // ─────────────────────────────────────────────────────────────────
+  // ── Priority classification ───────────────────────────────────────────────
   async classifyPriority(request: PriorityClassificationRequest) {
     const mlResult = await this.callPythonML<any>(
       '/ai/classify-priority',
@@ -207,24 +246,23 @@ export class AiService {
             priority: classification.priority_level?.toUpperCase() as any,
           },
         })
-        .catch(() => {});
+        .catch((e) =>
+          this.logger.warn(`Failed to persist priority: ${e.message}`),
+        );
     }
 
     return classification;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Queue optimization
-  // ─────────────────────────────────────────────────────────────────
+  // ── Queue optimisation ────────────────────────────────────────────────────
   async optimizeQueue(request: QueueOptimizationRequest) {
-    // Try Python first
     const mlResult = await this.callPythonML<any>(
       '/ai/optimize-queue',
       request,
     );
     if (mlResult) return mlResult;
 
-    // Fallback: local scoring
+    // ── Local fallback ────────────────────────────────────────────────────
     const date = new Date(request.date);
     const where: any = {
       appointmentDate: {
@@ -243,17 +281,18 @@ export class AiService {
       MEDIUM: 2,
       LOW: 1,
     };
+
     const scored = appointments
       .map((apt) => ({
         appointment_id: apt.id,
         patient_id: apt.patientId,
         priority_score:
-          (weights[apt.priority] || 2) +
+          (weights[apt.priority] ?? 2) +
           (apt.noShowProbability ? (1 - apt.noShowProbability) * 0.5 : 0),
         priority_level: apt.priority,
         no_show_probability: apt.noShowProbability,
         appointment_time: apt.appointmentDate.toISOString(),
-        original_position: apt.queuePosition || 0,
+        original_position: apt.queuePosition ?? 0,
         new_position: 0,
       }))
       .sort((a, b) => b.priority_score - a.priority_score);
@@ -273,23 +312,22 @@ export class AiService {
     }
 
     const totalMin = appointments.reduce(
-      (s, a) => s + (a.durationMinutes || 30),
+      (s, a) => s + (a.durationMinutes ?? 30),
       0,
     );
+
     return {
       optimized_queue: scored,
       total_appointments: scored.length,
       estimated_completion_time: new Date(
-        Date.now() + totalMin * 60000,
+        Date.now() + totalMin * 60_000,
       ).toISOString(),
       efficiency_score: scored.length > 0 ? 1 - changes / scored.length : 0,
       changes_made: changes,
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Batch prediction
-  // ─────────────────────────────────────────────────────────────────
+  // ── Batch prediction ──────────────────────────────────────────────────────
   async batchPredict(request: BatchPredictionRequest) {
     const mlResult = await this.callPythonML<any>('/ai/batch-predict', request);
     if (mlResult) return mlResult;
@@ -320,12 +358,10 @@ export class AiService {
             result: r,
           });
         } else if (request.prediction_type === 'wait_time') {
-          // ✅ doctor is required for wait time; if unassigned -> fail safely
           if (apt.doctorId === null) {
             failed.push(aptId);
             continue;
           }
-
           const r = await this.estimateWaitTime({
             appointment_id: aptId,
             doctor_id: apt.doctorId,
@@ -352,20 +388,19 @@ export class AiService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Health check
-  // ─────────────────────────────────────────────────────────────────
+  // ── Health check ──────────────────────────────────────────────────────────
   async healthCheck() {
     let mlServiceOnline = false;
+
     try {
       const res = await firstValueFrom(
         this.httpService
-          .get(`${this.mlBaseUrl}/health`)
+          .get(`${this.mlBaseUrl}/health`) // ← public endpoint, no auth needed
           .pipe(catchError(() => of(null))),
       );
       mlServiceOnline = res?.status === 200;
     } catch {
-      /* offline */
+      /* service offline — that's fine */
     }
 
     return {
@@ -374,6 +409,7 @@ export class AiService {
       priority_classifier: true,
       ml_service_online: mlServiceOnline,
       ml_service_url: this.mlBaseUrl,
+      api_key_configured: !!this.mlApiKey, // ✅ helpful debug field
       status: 'healthy',
     };
   }
