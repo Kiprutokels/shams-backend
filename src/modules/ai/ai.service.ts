@@ -41,26 +41,26 @@ export class AiService {
     payload: any,
   ): Promise<T | null> {
     const url = `${this.mlBaseUrl}/api/v1${endpoint}`;
+    const apiKey = this.configService.get<string>('ML_SERVICE_API_KEY');
+
     try {
       const response = await firstValueFrom(
         this.httpService
           .post<T>(url, payload, {
-            headers: {
-              Authorization: `Bearer ${this.configService.get('ML_SERVICE_API_KEY')}`,
-            },
+            headers: { 'X-Internal-API-Key': apiKey },
           })
           .pipe(
             catchError((err) => {
               const status = err?.response?.status;
 
-              // 401/403 = auth problem — fail loud, don't silently fallback
               if (status === 401 || status === 403) {
+                // Auth failure — throw loudly, do NOT fall back to local stubs
                 throw new Error(
-                  `ML service auth failed (${status}): check ML_SERVICE_API_KEY`,
+                  `ML service auth rejected (${status}). Check ML_SERVICE_API_KEY.`,
                 );
               }
 
-              // Network down, 500, timeout etc → safe to fallback locally
+              // Service down / timeout / 5xx → safe to use local fallback
               this.logger.warn(
                 `ML service unavailable (${endpoint}): ${err.message}`,
               );
@@ -70,9 +70,11 @@ export class AiService {
       );
       return response?.data ?? null;
     } catch (err) {
-      // Re-throw auth errors so callers know
-      if (err.message?.includes('auth failed')) throw err;
-      this.logger.warn(`ML service call failed: ${err}`);
+      if ((err as Error).message?.includes('auth rejected')) {
+        // Bubble this up so you see it clearly in logs/responses
+        throw err;
+      }
+      this.logger.warn(`ML service call failed (${endpoint}): ${err}`);
       return null;
     }
   }
