@@ -27,26 +27,52 @@ export class AiService {
     private waitTimeEstimator: WaitTimeEstimatorService,
     private priorityClassifier: PriorityClassifierService,
   ) {
-    this.mlBaseUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.mlBaseUrl = this.configService.get<string>(
+      'AI_SERVICE_URL',
+      'http://localhost:8000',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────
   // Helper: call Python FastAPI
   // ─────────────────────────────────────────────────────────────────
-  private async callPythonML<T>(endpoint: string, payload: any): Promise<T | null> {
+  private async callPythonML<T>(
+    endpoint: string,
+    payload: any,
+  ): Promise<T | null> {
     const url = `${this.mlBaseUrl}/api/v1${endpoint}`;
     try {
       const response = await firstValueFrom(
-        this.httpService.post<T>(url, payload).pipe(
-          catchError((err) => {
-            this.logger.warn(`ML service call failed (${endpoint}): ${err.message}`);
-            return of(null as any);
-          }),
-        ),
+        this.httpService
+          .post<T>(url, payload, {
+            headers: {
+              Authorization: `Bearer ${this.configService.get('ML_SERVICE_API_KEY')}`,
+            },
+          })
+          .pipe(
+            catchError((err) => {
+              const status = err?.response?.status;
+
+              // 401/403 = auth problem — fail loud, don't silently fallback
+              if (status === 401 || status === 403) {
+                throw new Error(
+                  `ML service auth failed (${status}): check ML_SERVICE_API_KEY`,
+                );
+              }
+
+              // Network down, 500, timeout etc → safe to fallback locally
+              this.logger.warn(
+                `ML service unavailable (${endpoint}): ${err.message}`,
+              );
+              return of(null as any);
+            }),
+          ),
       );
       return response?.data ?? null;
     } catch (err) {
-      this.logger.warn(`ML service unavailable at ${url}: ${err}`);
+      // Re-throw auth errors so callers know
+      if (err.message?.includes('auth failed')) throw err;
+      this.logger.warn(`ML service call failed: ${err}`);
       return null;
     }
   }
@@ -66,8 +92,12 @@ export class AiService {
         request.appointment_date = appointment.appointmentDate.toISOString();
         request.appointment_type = appointment.appointmentType as string;
         const [prevTotal, prevNoShow] = await Promise.all([
-          this.prisma.appointment.count({ where: { patientId: appointment.patientId } }),
-          this.prisma.appointment.count({ where: { patientId: appointment.patientId, status: 'NO_SHOW' } }),
+          this.prisma.appointment.count({
+            where: { patientId: appointment.patientId },
+          }),
+          this.prisma.appointment.count({
+            where: { patientId: appointment.patientId, status: 'NO_SHOW' },
+          }),
         ]);
         request.previous_appointments = prevTotal;
         request.previous_no_shows = prevNoShow;
@@ -75,15 +105,24 @@ export class AiService {
     }
 
     // 1. Try Python ML service
-    const mlResult = await this.callPythonML<any>('/ai/predict-noshow', request);
-    const prediction = mlResult ?? (await this.noShowPredictor.predict(request));
+    const mlResult = await this.callPythonML<any>(
+      '/ai/predict-noshow',
+      request,
+    );
+    const prediction =
+      mlResult ?? (await this.noShowPredictor.predict(request));
 
     // 2. Persist to DB
-    if (request.appointment_id && prediction?.no_show_probability !== undefined) {
-      await this.prisma.appointment.update({
-        where: { id: request.appointment_id },
-        data: { noShowProbability: prediction.no_show_probability },
-      }).catch(() => {});
+    if (
+      request.appointment_id &&
+      prediction?.no_show_probability !== undefined
+    ) {
+      await this.prisma.appointment
+        .update({
+          where: { id: request.appointment_id },
+          data: { noShowProbability: prediction.no_show_probability },
+        })
+        .catch(() => {});
     }
 
     return prediction;
@@ -109,23 +148,35 @@ export class AiService {
 
     if (!request.time_of_day) {
       const h = new Date(request.appointment_date).getHours();
-      request.time_of_day = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+      request.time_of_day =
+        h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
     }
     if (!request.day_of_week) {
-      request.day_of_week = new Date(request.appointment_date).toLocaleDateString('en-US', { weekday: 'long' });
+      request.day_of_week = new Date(
+        request.appointment_date,
+      ).toLocaleDateString('en-US', { weekday: 'long' });
     }
 
-    const mlResult = await this.callPythonML<any>('/ai/estimate-wait-time', request);
-    const estimation = mlResult ?? (await this.waitTimeEstimator.predict(request));
+    const mlResult = await this.callPythonML<any>(
+      '/ai/estimate-wait-time',
+      request,
+    );
+    const estimation =
+      mlResult ?? (await this.waitTimeEstimator.predict(request));
 
-    if (request.appointment_id && estimation?.estimated_wait_time !== undefined) {
-      await this.prisma.appointment.update({
-        where: { id: request.appointment_id },
-        data: {
-          estimatedWaitTime: estimation.estimated_wait_time,
-          queuePosition: estimation.queue_position,
-        },
-      }).catch(() => {});
+    if (
+      request.appointment_id &&
+      estimation?.estimated_wait_time !== undefined
+    ) {
+      await this.prisma.appointment
+        .update({
+          where: { id: request.appointment_id },
+          data: {
+            estimatedWaitTime: estimation.estimated_wait_time,
+            queuePosition: estimation.queue_position,
+          },
+        })
+        .catch(() => {});
     }
 
     return estimation;
@@ -135,17 +186,26 @@ export class AiService {
   // Priority classification
   // ─────────────────────────────────────────────────────────────────
   async classifyPriority(request: PriorityClassificationRequest) {
-    const mlResult = await this.callPythonML<any>('/ai/classify-priority', request);
-    const classification = mlResult ?? (await this.priorityClassifier.classify(request));
+    const mlResult = await this.callPythonML<any>(
+      '/ai/classify-priority',
+      request,
+    );
+    const classification =
+      mlResult ?? (await this.priorityClassifier.classify(request));
 
-    if (request.appointment_id && classification?.priority_score !== undefined) {
-      await this.prisma.appointment.update({
-        where: { id: request.appointment_id },
-        data: {
-          aiPriorityScore: classification.priority_score,
-          priority: classification.priority_level?.toUpperCase() as any,
-        },
-      }).catch(() => {});
+    if (
+      request.appointment_id &&
+      classification?.priority_score !== undefined
+    ) {
+      await this.prisma.appointment
+        .update({
+          where: { id: request.appointment_id },
+          data: {
+            aiPriorityScore: classification.priority_score,
+            priority: classification.priority_level?.toUpperCase() as any,
+          },
+        })
+        .catch(() => {});
     }
 
     return classification;
@@ -156,7 +216,10 @@ export class AiService {
   // ─────────────────────────────────────────────────────────────────
   async optimizeQueue(request: QueueOptimizationRequest) {
     // Try Python first
-    const mlResult = await this.callPythonML<any>('/ai/optimize-queue', request);
+    const mlResult = await this.callPythonML<any>(
+      '/ai/optimize-queue',
+      request,
+    );
     if (mlResult) return mlResult;
 
     // Fallback: local scoring
@@ -172,32 +235,51 @@ export class AiService {
 
     const appointments = await this.prisma.appointment.findMany({ where });
 
-    const weights: Record<string, number> = { EMERGENCY: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
-    const scored = appointments.map((apt) => ({
-      appointment_id: apt.id,
-      patient_id: apt.patientId,
-      priority_score: (weights[apt.priority] || 2) + (apt.noShowProbability ? (1 - apt.noShowProbability) * 0.5 : 0),
-      priority_level: apt.priority,
-      no_show_probability: apt.noShowProbability,
-      appointment_time: apt.appointmentDate.toISOString(),
-      original_position: apt.queuePosition || 0,
-      new_position: 0,
-    })).sort((a, b) => b.priority_score - a.priority_score);
+    const weights: Record<string, number> = {
+      EMERGENCY: 4,
+      HIGH: 3,
+      MEDIUM: 2,
+      LOW: 1,
+    };
+    const scored = appointments
+      .map((apt) => ({
+        appointment_id: apt.id,
+        patient_id: apt.patientId,
+        priority_score:
+          (weights[apt.priority] || 2) +
+          (apt.noShowProbability ? (1 - apt.noShowProbability) * 0.5 : 0),
+        priority_level: apt.priority,
+        no_show_probability: apt.noShowProbability,
+        appointment_time: apt.appointmentDate.toISOString(),
+        original_position: apt.queuePosition || 0,
+        new_position: 0,
+      }))
+      .sort((a, b) => b.priority_score - a.priority_score);
 
     let changes = 0;
     for (let i = 0; i < scored.length; i++) {
       scored[i].new_position = i + 1;
       if (scored[i].original_position !== i + 1) {
         changes++;
-        await this.prisma.appointment.update({ where: { id: scored[i].appointment_id }, data: { queuePosition: i + 1 } }).catch(() => {});
+        await this.prisma.appointment
+          .update({
+            where: { id: scored[i].appointment_id },
+            data: { queuePosition: i + 1 },
+          })
+          .catch(() => {});
       }
     }
 
-    const totalMin = appointments.reduce((s, a) => s + (a.durationMinutes || 30), 0);
+    const totalMin = appointments.reduce(
+      (s, a) => s + (a.durationMinutes || 30),
+      0,
+    );
     return {
       optimized_queue: scored,
       total_appointments: scored.length,
-      estimated_completion_time: new Date(Date.now() + totalMin * 60000).toISOString(),
+      estimated_completion_time: new Date(
+        Date.now() + totalMin * 60000,
+      ).toISOString(),
       efficiency_score: scored.length > 0 ? 1 - changes / scored.length : 0,
       changes_made: changes,
     };
@@ -215,8 +297,13 @@ export class AiService {
 
     for (const aptId of request.appointment_ids) {
       try {
-        const apt = await this.prisma.appointment.findUnique({ where: { id: aptId } });
-        if (!apt) { failed.push(aptId); continue; }
+        const apt = await this.prisma.appointment.findUnique({
+          where: { id: aptId },
+        });
+        if (!apt) {
+          failed.push(aptId);
+          continue;
+        }
 
         if (request.prediction_type === 'no_show') {
           const r = await this.predictNoShow({
@@ -225,7 +312,11 @@ export class AiService {
             appointment_date: apt.appointmentDate.toISOString(),
             appointment_type: apt.appointmentType as string,
           });
-          predictions.push({ appointment_id: aptId, type: 'no_show', result: r });
+          predictions.push({
+            appointment_id: aptId,
+            type: 'no_show',
+            result: r,
+          });
         } else if (request.prediction_type === 'wait_time') {
           // ✅ doctor is required for wait time; if unassigned -> fail safely
           if (apt.doctorId === null) {
@@ -239,7 +330,11 @@ export class AiService {
             appointment_date: apt.appointmentDate.toISOString(),
             appointment_type: apt.appointmentType as string,
           });
-          predictions.push({ appointment_id: aptId, type: 'wait_time', result: r });
+          predictions.push({
+            appointment_id: aptId,
+            type: 'wait_time',
+            result: r,
+          });
         } else {
           failed.push(aptId);
         }
@@ -248,7 +343,11 @@ export class AiService {
       }
     }
 
-    return { predictions, total_processed: predictions.length, failed_predictions: failed };
+    return {
+      predictions,
+      total_processed: predictions.length,
+      failed_predictions: failed,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -258,10 +357,14 @@ export class AiService {
     let mlServiceOnline = false;
     try {
       const res = await firstValueFrom(
-        this.httpService.get(`${this.mlBaseUrl}/health`).pipe(catchError(() => of(null))),
+        this.httpService
+          .get(`${this.mlBaseUrl}/health`)
+          .pipe(catchError(() => of(null))),
       );
       mlServiceOnline = res?.status === 200;
-    } catch { /* offline */ }
+    } catch {
+      /* offline */
+    }
 
     return {
       no_show_predictor: true,
