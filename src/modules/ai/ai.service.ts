@@ -42,6 +42,7 @@ export class AiService {
   ): Promise<T | null> {
     const url = `${this.mlBaseUrl}/api/v1${endpoint}`;
     const apiKey = this.configService.get<string>('ML_SERVICE_API_KEY');
+    this.logger.log(`Using API key: ${apiKey?.slice(0, 6)}...`);
 
     try {
       const response = await firstValueFrom(

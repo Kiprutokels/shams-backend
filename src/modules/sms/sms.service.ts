@@ -1,53 +1,57 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import twilio from 'twilio';
+import axios from 'axios';
 
 @Injectable()
 export class SmsService {
-  private client: twilio.Twilio;
-  private phoneNumber: string;
+  private apiKey: string;
+  private partnerId: string;
+  private senderId: string;
+  private apiUrl: string;
 
   constructor(private configService: ConfigService) {
-    const accountSid = this.configService.get<string>('TWILIO_ACCOUNT_SID');
-    const authToken = this.configService.get<string>('TWILIO_AUTH_TOKEN');
-    this.phoneNumber = this.configService.get<string>('TWILIO_PHONE_NUMBER') || '';
-
-    if (accountSid && authToken) {
-      this.client = twilio(accountSid, authToken);
-    }
+    this.apiKey = this.configService.get<string>('TEXTSMS_API_KEY') || '';
+    this.partnerId = this.configService.get<string>('TEXTSMS_PARTNER_ID') || '';
+    this.senderId = this.configService.get<string>('TEXTSMS_SENDER_ID') || 'TextSMS';
+    this.apiUrl = this.configService.get<string>('TEXTSMS_ENDPOINT') || '';
   }
 
+  /**
+   * Core method to send SMS via TextSMS API
+   */
   async sendSms(to: string, message: string) {
-    if (!this.client) {
-      console.warn('Twilio client not configured. SMS not sent.');
+    if (!this.apiKey || !this.partnerId) {
+      console.error('❌ TextSMS credentials missing in .env');
       return;
     }
 
+    // TextSMS prefers phone numbers without the '+' prefix
+    const formattedPhone = to.replace('+', '');
+
     try {
-      await this.client.messages.create({
-        body: message,
-        from: this.phoneNumber,
-        to: to,
+      // Structure matches 'sendSMS POST' from your collection 
+      const response = await axios.post(this.apiUrl, {
+        apikey: this.apiKey,      
+        partnerID: this.partnerId, 
+        mobile: formattedPhone,               
+        message: message,         
+        shortcode: this.senderId, 
+        pass_type: 'plain' // Required field per Postman source 
       });
-      console.log(`✅ SMS sent to ${to}`);
-    } catch (error) {
-      console.error(`❌ Failed to send SMS to ${to}:`, error);
-      throw error;
+
+      console.log(`✅ SMS sent to ${formattedPhone}:`, response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error(`❌ TextSMS Error:`, error.response?.data || error.message);
+      throw new InternalServerErrorException('SMS Delivery Failed');
     }
   }
 
-  async sendVerificationCode(phone: string, code: string) {
-    const message = `Your SHAMS verification code is: ${code}. Valid for 15 minutes.`;
-    await this.sendSms(phone, message);
-  }
-
-  async sendAppointmentReminder(phone: string, appointmentDetails: any) {
-    const message = `Reminder: You have an appointment with Dr. ${appointmentDetails.doctorName} on ${appointmentDetails.date} at ${appointmentDetails.time}. Please arrive 15 minutes early.`;
-    await this.sendSms(phone, message);
-  }
-
-  async sendQueueUpdate(phone: string, queueNumber: number, estimatedWait: number) {
-    const message = `Your queue number is ${queueNumber}. Estimated wait time: ${estimatedWait} minutes. We'll notify you when it's your turn.`;
-    await this.sendSms(phone, message);
+  /**
+   * MISSING METHOD: Added to resolve TS2339 error
+   */
+  async sendAppointmentReminder(phone: string, appointmentDetails: { doctorName: string; date: string; time: string }) {
+    const message = `Reminder: You have an appointment with Dr. ${appointmentDetails.doctorName} on ${appointmentDetails.date} at ${appointmentDetails.time}.`;
+    return await this.sendSms(phone, message);
   }
 }
