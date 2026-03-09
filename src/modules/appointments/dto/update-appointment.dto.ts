@@ -1,11 +1,34 @@
-import { IsEnum, IsOptional, IsString, IsDateString, IsInt, IsBoolean, Min } from 'class-validator';
-import { AppointmentStatus, PriorityLevel } from '@prisma/client';
+import {
+  IsInt,
+  IsDateString,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsBoolean,
+  Min,
+} from 'class-validator';
+import {
+  AppointmentStatus,
+  AppointmentType,
+  PriorityLevel,
+} from '@prisma/client';
 import { Type } from 'class-transformer';
 
 export class UpdateAppointmentDto {
+  // ── Assignment
+  @IsInt()
+  @IsOptional()
+  @Type(() => Number)
+  doctorId?: number;
+
+  // ── Scheduling
   @IsDateString()
   @IsOptional()
   appointmentDate?: string;
+
+  @IsEnum(AppointmentType)
+  @IsOptional()
+  appointmentType?: AppointmentType;
 
   @IsEnum(AppointmentStatus)
   @IsOptional()
@@ -21,12 +44,7 @@ export class UpdateAppointmentDto {
   @Type(() => Number)
   durationMinutes?: number;
 
-  // Admin/Nurse can assign doctor via PATCH
-  @IsInt()
-  @IsOptional()
-  @Type(() => Number)
-  doctorId?: number;
-
+  // ── Clinical ──
   @IsString()
   @IsOptional()
   chiefComplaint?: string;
@@ -34,10 +52,6 @@ export class UpdateAppointmentDto {
   @IsString()
   @IsOptional()
   symptoms?: string;
-
-  @IsString()
-  @IsOptional()
-  vitalSigns?: string;
 
   @IsString()
   @IsOptional()
@@ -51,6 +65,7 @@ export class UpdateAppointmentDto {
   @IsOptional()
   notes?: string;
 
+  // ── Check-in ──
   @IsBoolean()
   @IsOptional()
   checkedIn?: boolean;

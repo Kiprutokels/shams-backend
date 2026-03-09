@@ -18,11 +18,10 @@ export class UsersService {
     private mailService: MailService,
   ) {}
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Admin creates any user role
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async adminCreateUser(createUserDto: CreateUserDto, creatorRole: string) {
-    // Only ADMIN can create any role; DOCTOR can only create PATIENT
     if (creatorRole === 'DOCTOR' && createUserDto.role !== 'PATIENT') {
       throw new ForbiddenException('Doctors can only create PATIENT accounts');
     }
@@ -41,11 +40,10 @@ export class UsersService {
 
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
 
-    // Generate verification code
     const verificationCode = Math.floor(
       100000 + Math.random() * 900000,
     ).toString();
-    const verificationCodeExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const verificationCodeExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const user = await this.prisma.user.create({
       data: {
@@ -65,20 +63,21 @@ export class UsersService {
       },
     });
 
-    // Send invite email
-    // if (createUserDto.sendInviteEmail !== false) {
-    //   try {
-    //     await this.mailService.sendInviteEmail(
-    //       user.email,
-    //       user.firstName,
-    //       createUserDto.password,   // plain-text; user changes after login
-    //       verificationCode,
-    //       user.role,
-    //     );
-    //   } catch (error) {
-    //     console.error('Failed to send invite email:', error);
-    //   }
-    // }
+    // ── Send invite email 
+    if (createUserDto.sendInviteEmail !== false) {
+      try {
+        await this.mailService.sendInviteEmail(
+          user.email,
+          user.firstName,
+          createUserDto.password, // plain-text; user must change after first login
+          verificationCode,
+          user.role,
+        );
+      } catch (error) {
+        // Non-fatal — account is still created even if mail fails
+        console.error('Failed to send invite email:', error);
+      }
+    }
 
     return {
       message: `${user.role} account created successfully`,
@@ -87,9 +86,9 @@ export class UsersService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // List all users (admin)
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async findAll(role?: UserRole) {
     const where = role ? { role } : {};
     return this.prisma.user.findMany({
@@ -113,9 +112,9 @@ export class UsersService {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Single user
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async findOne(id: number) {
     const user = await this.prisma.user.findUnique({
       where: { id },
@@ -145,9 +144,9 @@ export class UsersService {
     return user;
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Doctors list
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async findDoctors(specialization?: string) {
     const where: any = { role: UserRole.DOCTOR, isActive: true };
     if (specialization) {
@@ -166,9 +165,9 @@ export class UsersService {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Update user
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async update(
     id: number,
     updateUserDto: UpdateUserDto,
@@ -178,15 +177,21 @@ export class UsersService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
-    if (currentUserRole === 'PATIENT' && id !== currentUserId)
+    if (currentUserRole === 'PATIENT' && id !== currentUserId) {
       throw new ForbiddenException('You can only update your own profile');
-    if (currentUserRole === 'DOCTOR' && id !== currentUserId)
+    }
+    if (currentUserRole === 'DOCTOR' && id !== currentUserId) {
       throw new ForbiddenException('You can only update your own profile');
+    }
 
-    if (updateUserDto.isActive !== undefined && currentUserRole !== 'ADMIN')
+    // Only admins may flip isActive
+    if (updateUserDto.isActive !== undefined && currentUserRole !== 'ADMIN') {
       delete updateUserDto.isActive;
+    }
 
     const updateData: any = { ...updateUserDto };
+
+    // Convert dateOfBirth string → Date
     if (updateUserDto.dateOfBirth) {
       updateData.dateOfBirth = new Date(updateUserDto.dateOfBirth);
     }
@@ -214,12 +219,13 @@ export class UsersService {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Soft delete
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async remove(id: number, currentUserRole: string) {
-    if (currentUserRole !== 'ADMIN')
+    if (currentUserRole !== 'ADMIN') {
       throw new ForbiddenException('Only admins can delete users');
+    }
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
     return this.prisma.user.update({
@@ -228,16 +234,16 @@ export class UsersService {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Own profile
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async getProfile(userId: number) {
     return this.findOne(userId);
   }
 
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   // Stats
-  // ─────────────────────────────────────────────────────────────────
+  // ─────────────
   async getStats(userId: number, role: string) {
     if (role === 'PATIENT') {
       const [total, upcoming, completed, cancelled] = await Promise.all([

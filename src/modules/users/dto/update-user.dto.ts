@@ -1,6 +1,13 @@
-import { IsString, IsOptional, IsBoolean, IsDateString } from 'class-validator';
+import {
+  IsString,
+  IsEmail,
+  IsOptional,
+  IsBoolean,
+  IsDateString,
+} from 'class-validator';
 
 export class UpdateUserDto {
+  // ── Personal ──
   @IsString()
   @IsOptional()
   firstName?: string;
@@ -8,6 +15,14 @@ export class UpdateUserDto {
   @IsString()
   @IsOptional()
   lastName?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @IsString()
+  @IsOptional()
+  phone?: string;
 
   @IsDateString()
   @IsOptional()
@@ -21,6 +36,7 @@ export class UpdateUserDto {
   @IsOptional()
   address?: string;
 
+  // ── Medical (PATIENT) ─
   @IsString()
   @IsOptional()
   bloodType?: string;
@@ -33,6 +49,7 @@ export class UpdateUserDto {
   @IsOptional()
   medicalHistory?: string;
 
+  // ── Professional (DOCTOR / NURSE) ──
   @IsString()
   @IsOptional()
   specialization?: string;
@@ -45,6 +62,7 @@ export class UpdateUserDto {
   @IsOptional()
   department?: string;
 
+  // ── Admin-only 
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
