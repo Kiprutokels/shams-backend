@@ -230,7 +230,7 @@ export class AppointmentsService {
         skip,
         take: limit,
         include: DEFAULT_INCLUDE,
-        orderBy: { appointmentDate: 'asc' },
+        orderBy: { appointmentDate: 'desc' },
       }),
       this.prisma.appointment.count({ where }),
     ]);
